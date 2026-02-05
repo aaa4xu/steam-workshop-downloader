@@ -51,11 +51,59 @@ internal sealed class WorkshopDepotDownloader
     /// </summary>
     public async Task<BatchDownloadResult> DownloadQueuedAsync(ChannelReader<ulong> reader, string parentDir)
     {
-        var failed = new List<ulong>();
-        var processed = 0;
         var session = new SteamSession(_options);
         await session.ConnectAsync();
         await session.LogOnAsync();
+
+        var manifestChannel = Channel.CreateUnbounded<ManifestDownloadResult>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true
+        });
+
+        try
+        {
+            var manifestTask = EnqueueManifestsAsync(reader, manifestChannel.Writer, session, parentDir);
+            var downloadTask = ConsumeManifestsAsync(manifestChannel.Reader, session);
+
+            var manifestResult = await manifestTask;
+            var downloadResult = await downloadTask;
+
+            var failed = new List<ulong>(manifestResult.FailedIds);
+            failed.AddRange(downloadResult.FailedIds);
+
+            return new BatchDownloadResult(manifestResult.Processed, failed);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+        }
+        finally
+        {
+            await session.LogOffAsync();
+        }
+        return new BatchDownloadResult(0, new List<ulong>());
+    }
+
+    private async Task<bool> DownloadWithSessionAsync(SteamSession session, ulong publishedFileId, string outputDir)
+    {
+        var manifest = await FetchManifestAsync(session, publishedFileId, outputDir);
+        if (manifest == null)
+        {
+            return false;
+        }
+
+        return await DownloadFromManifestAsync(session, manifest);
+    }
+
+    private async Task<ManifestStageResult> EnqueueManifestsAsync(
+        ChannelReader<ulong> reader,
+        ChannelWriter<ManifestDownloadResult> writer,
+        SteamSession session,
+        string parentDir)
+    {
+        var failed = new List<ulong>();
+        var processed = 0;
 
         try
         {
@@ -70,31 +118,32 @@ internal sealed class WorkshopDepotDownloader
                     {
                         if (attempt > 1)
                         {
-                            Console.WriteLine($"Retry {attempt}/{MaxDownloadAttempts} for {id}...");
+                            Console.WriteLine($"Retry {attempt}/{MaxDownloadAttempts} for {id} (manifest)...");
                         }
 
                         try
                         {
-                            ok = await DownloadWithSessionAsync(session, id, itemDir);
+                            var manifest = await FetchManifestAsync(session, id, itemDir);
+                            if (manifest != null)
+                            {
+                                await writer.WriteAsync(manifest);
+                                ok = true;
+                                break;
+                            }
                         }
                         catch (Exception ex)
                         {
-                            Console.Error.WriteLine($"Download failed for {id} on attempt {attempt}: {ex.Message}");
-                            ok = false;
-                        }
-
-                        if (ok)
-                        {
-                            break;
+                            Console.Error.WriteLine($"Manifest fetch failed for {id} on attempt {attempt}: {ex.Message}");
                         }
 
                         if (attempt < MaxDownloadAttempts)
                         {
                             var delay = TimeSpan.FromSeconds(Math.Min(10, attempt * 2));
-                            Console.WriteLine($"Retrying in {delay.TotalSeconds:0} sec...");
+                            Console.WriteLine($"Retrying manifest in {delay.TotalSeconds:0} sec...");
                             await Task.Delay(delay);
                         }
                     }
+
                     if (!ok)
                     {
                         failed.Add(id);
@@ -108,33 +157,89 @@ internal sealed class WorkshopDepotDownloader
         }
         finally
         {
-            await session.LogOffAsync();
+            writer.Complete();
         }
 
-        return new BatchDownloadResult(processed, failed);
+        return new ManifestStageResult(processed, failed);
     }
 
-    private async Task<bool> DownloadWithSessionAsync(SteamSession session, ulong publishedFileId, string outputDir)
+    private async Task<DownloadStageResult> ConsumeManifestsAsync(ChannelReader<ManifestDownloadResult> reader, SteamSession session)
+    {
+        var failed = new List<ulong>();
+
+        try
+        {
+            while (await reader.WaitToReadAsync())
+            {
+                while (reader.TryRead(out var manifest))
+                {
+                    var ok = false;
+                    for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
+                    {
+                        if (attempt > 1)
+                        {
+                            Console.WriteLine($"Retry {attempt}/{MaxDownloadAttempts} for {manifest.PublishedFileId} (download)...");
+                        }
+
+                        try
+                        {
+                            ok = await DownloadFromManifestAsync(session, manifest);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"Download failed for {manifest.PublishedFileId} on attempt {attempt}: {ex.Message}");
+                            ok = false;
+                        }
+
+                        if (ok)
+                        {
+                            break;
+                        }
+
+                        if (attempt < MaxDownloadAttempts)
+                        {
+                            var delay = TimeSpan.FromSeconds(Math.Min(10, attempt * 2));
+                            Console.WriteLine($"Retrying download in {delay.TotalSeconds:0} sec...");
+                            await Task.Delay(delay);
+                        }
+                    }
+
+                    if (!ok)
+                    {
+                        failed.Add(manifest.PublishedFileId);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+        }
+
+        return new DownloadStageResult(failed);
+    }
+
+    private async Task<ManifestDownloadResult?> FetchManifestAsync(SteamSession session, ulong publishedFileId, string outputDir)
     {
         var manifestId = await GetWorkshopManifestIdAsync(session, publishedFileId);
         if (manifestId == 0)
         {
             Console.WriteLine("Workshop manifest id not found.");
-            return false;
+            return null;
         }
 
         var depotId = await GetWorkshopDepotIdAsync(session);
         if (depotId == 0)
         {
             Console.WriteLine("Workshop depot id not found.");
-            return false;
+            return null;
         }
 
         var depotKey = await GetDepotKeyAsync(session, depotId);
         if (depotKey == null || depotKey.Length == 0)
         {
             Console.WriteLine("Depot key not available.");
-            return false;
+            return null;
         }
 
         var servers = await session.Content.GetServersForSteamPipe();
@@ -142,7 +247,7 @@ internal sealed class WorkshopDepotDownloader
         if (server == null || string.IsNullOrWhiteSpace(server.Host))
         {
             Console.WriteLine("No CDN servers available.");
-            return false;
+            return null;
         }
 
         string? cdnAuthToken = null;
@@ -179,23 +284,31 @@ internal sealed class WorkshopDepotDownloader
 
         LogManifestFileList(manifest);
 
+        return new ManifestDownloadResult(publishedFileId, outputDir, depotId, depotKey, server, cdnAuthToken, manifest);
+    }
+
+    private async Task<bool> DownloadFromManifestAsync(SteamSession session, ManifestDownloadResult manifestResult)
+    {
+        var manifest = manifestResult.Manifest;
         var selectedFiles = SelectManifestFiles(manifest, _options.Filters);
         if (_options.Filters.Count > 0)
         {
             LogFilteredFileList(selectedFiles, _options.Filters);
         }
 
-        var tempDir = PrepareTempDirectory(outputDir);
-        var plan = BuildDownloadPlan(selectedFiles, outputDir);
+        var tempDir = PrepareTempDirectory(manifestResult.OutputDir);
+        var plan = BuildDownloadPlan(selectedFiles, manifestResult.OutputDir);
 
         Console.WriteLine($"Files selected: {selectedFiles.Count}");
         Console.WriteLine($"Files to copy: {plan.CopyFiles.Count}");
         Console.WriteLine($"Files to download: {plan.DownloadFiles.Count}");
 
         CopyUnchangedFiles(plan.CopyFiles, tempDir);
-        await DownloadManifestFilesAsync(cdn, depotId, depotKey, server, cdnAuthToken, tempDir, plan.DownloadFiles);
 
-        SwapDirectories(outputDir, tempDir);
+        using var cdn = new Client(session.Client);
+        await DownloadManifestFilesAsync(cdn, manifestResult.DepotId, manifestResult.DepotKey, manifestResult.Server, manifestResult.CdnAuthToken, tempDir, plan.DownloadFiles);
+
+        SwapDirectories(manifestResult.OutputDir, tempDir);
         return true;
     }
 
@@ -818,4 +931,58 @@ internal sealed class BatchDownloadResult
 
     public int TotalCount { get; }
     public IReadOnlyList<ulong> FailedIds { get; }
+}
+
+/// <summary>
+/// Holds a downloaded and decrypted depot manifest plus the metadata required to fetch its chunks.
+/// </summary>
+internal sealed class ManifestDownloadResult
+{
+    public ManifestDownloadResult(
+        ulong publishedFileId,
+        string outputDir,
+        uint depotId,
+        byte[] depotKey,
+        Server server,
+        string? cdnAuthToken,
+        DepotManifest manifest)
+    {
+        PublishedFileId = publishedFileId;
+        OutputDir = outputDir;
+        DepotId = depotId;
+        DepotKey = depotKey;
+        Server = server;
+        CdnAuthToken = cdnAuthToken;
+        Manifest = manifest;
+    }
+
+    public ulong PublishedFileId { get; }
+    public string OutputDir { get; }
+    public uint DepotId { get; }
+    public byte[] DepotKey { get; }
+    public Server Server { get; }
+    public string? CdnAuthToken { get; }
+    public DepotManifest Manifest { get; }
+}
+
+internal sealed class ManifestStageResult
+{
+    public ManifestStageResult(int processed, List<ulong> failedIds)
+    {
+        Processed = processed;
+        FailedIds = failedIds;
+    }
+
+    public int Processed { get; }
+    public List<ulong> FailedIds { get; }
+}
+
+internal sealed class DownloadStageResult
+{
+    public DownloadStageResult(List<ulong> failedIds)
+    {
+        FailedIds = failedIds;
+    }
+
+    public List<ulong> FailedIds { get; }
 }
