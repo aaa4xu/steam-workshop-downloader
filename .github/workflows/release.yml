@@ -1,0 +1,81 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            archive: zip
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive: zip
+          - os: ubuntu-latest
+            rid: linux-arm64
+            archive: zip
+          - os: macos-14
+            rid: osx-arm64
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore ./steam-workshop-downloader.csproj
+
+      - name: Publish
+        run: dotnet publish ./steam-workshop-downloader.csproj -c Release -r ${{ matrix.rid }} --self-contained true -o ./artifacts/${{ matrix.rid }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $archive = "steam-workshop-downloader-${{ matrix.rid }}.zip"
+          if (Test-Path $archive) { Remove-Item $archive }
+          Compress-Archive -Path artifacts/${{ matrix.rid }}/* -DestinationPath $archive
+
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          archive="steam-workshop-downloader-${{ matrix.rid }}.zip"
+          rm -f "$archive"
+          (cd artifacts/${{ matrix.rid }} && zip -r "../$archive" .)
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-workshop-downloader-${{ matrix.rid }}
+          path: steam-workshop-downloader-${{ matrix.rid }}.zip
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release-assets
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release-assets/**/*.zip
+          generate_release_notes: true
