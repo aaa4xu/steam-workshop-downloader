@@ -171,7 +171,7 @@ internal sealed class SteamSession
         {
             Username = _options.Username,
             Password = _options.Password,
-            DeviceFriendlyName = "steam-workshop-lurker",
+            DeviceFriendlyName = "steam-workshop-downloader",
             ClientOSType = EOSType.Windows10,
             IsPersistentSession = true,
             GuardData = _tokenCache?.GuardData,
@@ -309,11 +309,11 @@ internal sealed class SteamSession
                 return Path.GetFullPath("auth.json");
             }
 
-            baseDir = Path.Combine(home, ".steam-workshop-lurker");
+            baseDir = Path.Combine(home, ".steam-workshop-downloader");
         }
         else
         {
-            baseDir = Path.Combine(baseDir, "steam-workshop-lurker");
+            baseDir = Path.Combine(baseDir, "steam-workshop-downloader");
         }
 
         return Path.Combine(baseDir, "auth.json");

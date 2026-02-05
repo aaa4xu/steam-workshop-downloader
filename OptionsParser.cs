@@ -119,7 +119,7 @@ internal static class OptionsParser
         options.GuardCode ??= Environment.GetEnvironmentVariable("STEAM_GUARD");
         options.EmailCode ??= Environment.GetEnvironmentVariable("STEAM_EMAIL_GUARD");
         options.AuthCachePath ??= Environment.GetEnvironmentVariable("STEAM_AUTH_CACHE");
-        options.LogPath ??= Environment.GetEnvironmentVariable("STEAM_LOG") ?? Environment.GetEnvironmentVariable("LURKER_LOG");
+        options.LogPath ??= Environment.GetEnvironmentVariable("STEAM_LOG") ?? Environment.GetEnvironmentVariable("STEAM_WORKSHOP_DOWNLOADER_LOG");
 
         if (string.IsNullOrWhiteSpace(options.Username) || string.IsNullOrWhiteSpace(options.Password))
         {
@@ -132,16 +132,16 @@ internal static class OptionsParser
     public static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  lurker <publishedFileId> <outputDir> [--appid <id>] [--anonymous] [--user <u>] [--pass <p>] [--guard <code>] [--email <code>]");
-        Console.WriteLine("  lurker <user> <pass> <outputDir> <publishedFileId> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
-        Console.WriteLine("  lurker <idListFile.txt> <outputDir> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
-        Console.WriteLine("  lurker <user> <pass> <outputDir> <idListFile.txt> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  steam-workshop-downloader <publishedFileId> <outputDir> [--appid <id>] [--anonymous] [--user <u>] [--pass <p>] [--guard <code>] [--email <code>]");
+        Console.WriteLine("  steam-workshop-downloader <user> <pass> <outputDir> <publishedFileId> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  steam-workshop-downloader <idListFile.txt> <outputDir> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  steam-workshop-downloader <user> <pass> <outputDir> <idListFile.txt> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
         Console.WriteLine();
         Console.WriteLine("Batch mode writes each workshop item into a subfolder named after its id under outputDir.");
         Console.WriteLine();
         Console.WriteLine("Environment variables:");
         Console.WriteLine("  STEAM_USER, STEAM_PASS, STEAM_GUARD, STEAM_EMAIL_GUARD");
-        Console.WriteLine("  STEAM_AUTH_CACHE, STEAM_LOG, LURKER_LOG");
+        Console.WriteLine("  STEAM_AUTH_CACHE, STEAM_LOG, STEAM_WORKSHOP_DOWNLOADER_LOG");
     }
 
     private static uint ParseUInt(string? value, uint fallback)
