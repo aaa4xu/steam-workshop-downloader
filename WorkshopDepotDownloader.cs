@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Threading.Channels;
@@ -123,12 +124,33 @@ internal sealed class WorkshopDepotDownloader
 
                         try
                         {
-                            var manifest = await FetchManifestAsync(session, id, itemDir);
-                            if (manifest != null)
+                            var manifestId = await GetWorkshopManifestIdAsync(session, id);
+                            if (manifestId == 0)
                             {
-                                await writer.WriteAsync(manifest);
-                                ok = true;
-                                break;
+                                Console.WriteLine("Workshop manifest id not found.");
+                            }
+                            else
+                            {
+                                var state = TryLoadState(itemDir);
+                                if (state != null && state.ManifestId == manifestId)
+                                {
+                                    if (IsStateUpToDate(state, itemDir, _options.Filters))
+                                    {
+                                        Console.WriteLine($"State up-to-date for {id}, skipping download.");
+                                        ok = true;
+                                        break;
+                                    }
+
+                                    Console.WriteLine($"State exists for {id}, but local files differ. Re-downloading.");
+                                }
+
+                                var manifest = await FetchManifestAsync(session, id, itemDir, manifestId);
+                                if (manifest != null)
+                                {
+                                    await writer.WriteAsync(manifest);
+                                    ok = true;
+                                    break;
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -228,6 +250,11 @@ internal sealed class WorkshopDepotDownloader
             return null;
         }
 
+        return await FetchManifestAsync(session, publishedFileId, outputDir, manifestId);
+    }
+
+    private async Task<ManifestDownloadResult?> FetchManifestAsync(SteamSession session, ulong publishedFileId, string outputDir, ulong manifestId)
+    {
         var depotId = await GetWorkshopDepotIdAsync(session);
         if (depotId == 0)
         {
@@ -284,7 +311,7 @@ internal sealed class WorkshopDepotDownloader
 
         LogManifestFileList(manifest);
 
-        return new ManifestDownloadResult(publishedFileId, outputDir, depotId, depotKey, server, cdnAuthToken, manifest);
+        return new ManifestDownloadResult(publishedFileId, outputDir, manifestId, depotId, depotKey, server, cdnAuthToken, manifest);
     }
 
     private async Task<bool> DownloadFromManifestAsync(SteamSession session, ManifestDownloadResult manifestResult)
@@ -307,6 +334,8 @@ internal sealed class WorkshopDepotDownloader
 
         using var cdn = new Client(session.Client);
         await DownloadManifestFilesAsync(cdn, manifestResult.DepotId, manifestResult.DepotKey, manifestResult.Server, manifestResult.CdnAuthToken, tempDir, plan.DownloadFiles);
+
+        SaveState(manifestResult, tempDir);
 
         SwapDirectories(manifestResult.OutputDir, tempDir);
         return true;
@@ -648,6 +677,181 @@ internal sealed class WorkshopDepotDownloader
         return plan;
     }
 
+    private bool IsStateUpToDate(WorkshopState state, string outputDir, List<string> filters)
+    {
+        if (!Directory.Exists(outputDir))
+        {
+            return false;
+        }
+
+        var expectedFiles = SelectStateFiles(state.Files, filters);
+        var expectedMap = new Dictionary<string, WorkshopStateFile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in expectedFiles)
+        {
+            var normalized = NormalizeManifestPath(file.Path);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                continue;
+            }
+
+            if (!expectedMap.ContainsKey(normalized))
+            {
+                expectedMap.Add(normalized, file);
+            }
+        }
+
+        if (expectedMap.Count == 0)
+        {
+            foreach (var filePath in Directory.EnumerateFiles(outputDir, "*", SearchOption.AllDirectories))
+            {
+                var relPath = NormalizeManifestPath(Path.GetRelativePath(outputDir, filePath));
+                if (string.Equals(relPath, ".state.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+
+        foreach (var kvp in expectedMap)
+        {
+            var stateFile = kvp.Value;
+            if (string.IsNullOrWhiteSpace(stateFile.Sha1))
+            {
+                return false;
+            }
+
+            var fullPath = GetSafePath(outputDir, kvp.Key);
+            if (!File.Exists(fullPath))
+            {
+                return false;
+            }
+
+            var info = new FileInfo(fullPath);
+            if ((ulong)info.Length != stateFile.Size)
+            {
+                return false;
+            }
+
+            byte[] expectedHash;
+            try
+            {
+                expectedHash = Convert.FromHexString(stateFile.Sha1);
+            }
+            catch
+            {
+                return false;
+            }
+
+            var localHash = ComputeSha1(fullPath);
+            if (!HashEquals(localHash, expectedHash))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static List<WorkshopStateFile> SelectStateFiles(List<WorkshopStateFile> files, List<string> filters)
+    {
+        if (filters.Count == 0)
+        {
+            return files;
+        }
+
+        var regexes = BuildFilterRegexes(filters);
+        var result = new List<WorkshopStateFile>();
+        foreach (var file in files)
+        {
+            var normalized = NormalizeManifestPath(file.Path);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                continue;
+            }
+
+            if (MatchesAnyFilter(normalized, regexes))
+            {
+                result.Add(file);
+            }
+        }
+
+        return result;
+    }
+
+    private static WorkshopState? TryLoadState(string outputDir)
+    {
+        var path = GetStatePath(outputDir);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(path);
+            var state = JsonSerializer.Deserialize<WorkshopState>(json);
+            if (state == null || state.ManifestId == 0 || state.Files == null)
+            {
+                return null;
+            }
+
+            return state;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SaveState(ManifestDownloadResult manifestResult, string outputDir)
+    {
+        var state = new WorkshopState
+        {
+            ManifestId = manifestResult.ManifestId
+        };
+
+        if (manifestResult.Manifest.Files != null)
+        {
+            foreach (var file in manifestResult.Manifest.Files)
+            {
+                if ((file.Flags & EDepotFileFlag.Directory) != 0)
+                {
+                    continue;
+                }
+
+                var path = NormalizeManifestPath(file.FileName);
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                var hash = file.FileHash == null || file.FileHash.Length == 0
+                    ? null
+                    : Convert.ToHexString(file.FileHash);
+
+                state.Files.Add(new WorkshopStateFile
+                {
+                    Path = path,
+                    Size = file.TotalSize,
+                    Sha1 = hash
+                });
+            }
+        }
+
+        var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
+        var pathOut = GetStatePath(outputDir);
+        File.WriteAllText(pathOut, json);
+    }
+
+    private static string GetStatePath(string outputDir)
+    {
+        return Path.Combine(outputDir, ".state.json");
+    }
+
     private static void CopyUnchangedFiles(List<CopyPlanItem> filesToCopy, string tempDir)
     {
         foreach (var item in filesToCopy)
@@ -828,8 +1032,18 @@ internal sealed class WorkshopDepotDownloader
                 var isDouble = i + 1 < pattern.Length && pattern[i + 1] == '*';
                 if (isDouble)
                 {
-                    sb.Append(".*");
-                    i++;
+                    var hasSlash = i + 2 < pattern.Length && pattern[i + 2] == '/';
+                    if (hasSlash)
+                    {
+                        // "**/" should match zero or more path segments.
+                        sb.Append("(?:.*/)?");
+                        i += 2;
+                    }
+                    else
+                    {
+                        sb.Append(".*");
+                        i++;
+                    }
                 }
                 else
                 {
@@ -941,6 +1155,7 @@ internal sealed class ManifestDownloadResult
     public ManifestDownloadResult(
         ulong publishedFileId,
         string outputDir,
+        ulong manifestId,
         uint depotId,
         byte[] depotKey,
         Server server,
@@ -949,6 +1164,7 @@ internal sealed class ManifestDownloadResult
     {
         PublishedFileId = publishedFileId;
         OutputDir = outputDir;
+        ManifestId = manifestId;
         DepotId = depotId;
         DepotKey = depotKey;
         Server = server;
@@ -958,6 +1174,7 @@ internal sealed class ManifestDownloadResult
 
     public ulong PublishedFileId { get; }
     public string OutputDir { get; }
+    public ulong ManifestId { get; }
     public uint DepotId { get; }
     public byte[] DepotKey { get; }
     public Server Server { get; }
@@ -985,4 +1202,23 @@ internal sealed class DownloadStageResult
     }
 
     public List<ulong> FailedIds { get; }
+}
+
+/// <summary>
+/// Cached manifest metadata saved to disk to skip redundant manifest downloads.
+/// </summary>
+internal sealed class WorkshopState
+{
+    public ulong ManifestId { get; set; }
+    public List<WorkshopStateFile> Files { get; set; } = new();
+}
+
+/// <summary>
+/// Cached file entry for a workshop item.
+/// </summary>
+internal sealed class WorkshopStateFile
+{
+    public string Path { get; set; } = string.Empty;
+    public ulong Size { get; set; }
+    public string? Sha1 { get; set; }
 }

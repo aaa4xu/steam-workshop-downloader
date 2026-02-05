@@ -114,7 +114,6 @@ internal static class Program
 
             foreach (var id in batchIds)
             {
-                Console.WriteLine($"Workshop item: {id}");
                 if (!detailsMap.TryGetValue(id, out var details))
                 {
                     Console.Error.WriteLine($"Failed to resolve workshop details for {id}. Result=missing");
@@ -128,13 +127,10 @@ internal static class Program
                     invalidIds.Add(id);
                     continue;
                 }
-
-                Console.WriteLine($"Title: {details.Title}");
                 if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
                 {
                     Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
                 }
-                Console.WriteLine($"UGC handle: {details.HContentFile}");
 
                 await channel.Writer.WriteAsync(id);
             }
@@ -191,7 +187,6 @@ internal static class Program
                 continue;
             }
 
-            Console.WriteLine($"Workshop item: {details.PublishedFileId}");
             if (details.Result != 1)
             {
                 Console.Error.WriteLine($"Failed to resolve workshop details for {details.PublishedFileId}. Result={details.Result}");
@@ -199,12 +194,10 @@ internal static class Program
                 continue;
             }
 
-            Console.WriteLine($"Title: {details.Title}");
             if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
             {
                 Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
             }
-            Console.WriteLine($"UGC handle: {details.HContentFile}");
 
             await channel.Writer.WriteAsync(details.PublishedFileId);
         }
