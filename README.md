@@ -121,3 +121,13 @@ Override with:
 ```bash
 dotnet publish -c Release -r win-x64
 ```
+
+## macOS Gatekeeper workaround
+
+If macOS blocks each library after you allow the main binary, it is because the downloaded
+archive is tagged with the quarantine attribute. Remove that attribute from the extracted
+folder to trust all embedded binaries at once:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/steam-workshop-downloader-osx-arm64
+```
