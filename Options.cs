@@ -6,6 +6,7 @@ using System.Collections.Generic;
 internal sealed class Options
 {
     public ulong PublishedFileId { get; set; }
+    public string? IdListPath { get; set; }
     public string OutputDir { get; set; } = string.Empty;
     public uint AppId { get; set; } = 268500; // XCOM 2 default
     public string? Username { get; set; }
@@ -17,7 +18,9 @@ internal sealed class Options
     public List<string> Filters { get; set; } = new();
     public bool UseAnonymous { get; set; }
 
-    public bool IsValid => PublishedFileId != 0 && !string.IsNullOrWhiteSpace(OutputDir);
+    public bool IsValid => !string.IsNullOrWhiteSpace(OutputDir) && (PublishedFileId != 0 || !string.IsNullOrWhiteSpace(IdListPath));
+
+    public bool IsBatch => !string.IsNullOrWhiteSpace(IdListPath);
 
     public Options Clone()
     {

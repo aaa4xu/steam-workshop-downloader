@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Threading.Channels;
 using SteamKit2;
 using SteamKit2.CDN;
 using SteamKit2.Internal;
@@ -42,6 +43,45 @@ internal sealed class WorkshopDepotDownloader
         {
             await session.LogOffAsync();
         }
+    }
+
+    /// <summary>
+    /// Consumes a queue of workshop IDs and downloads them sequentially using one Steam session.
+    /// </summary>
+    public async Task<BatchDownloadResult> DownloadQueuedAsync(ChannelReader<ulong> reader, string parentDir)
+    {
+        var failed = new List<ulong>();
+        var processed = 0;
+        var session = new SteamSession(_options);
+        await session.ConnectAsync();
+        await session.LogOnAsync();
+
+        try
+        {
+            while (await reader.WaitToReadAsync())
+            {
+                while (reader.TryRead(out var id))
+                {
+                    processed++;
+                    var itemDir = Path.Combine(parentDir, id.ToString(CultureInfo.InvariantCulture));
+                    var ok = await DownloadWithSessionAsync(session, id, itemDir);
+                    if (!ok)
+                    {
+                        failed.Add(id);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+        }
+        finally
+        {
+            await session.LogOffAsync();
+        }
+
+        return new BatchDownloadResult(processed, failed);
     }
 
     private async Task<bool> DownloadWithSessionAsync(SteamSession session, ulong publishedFileId, string outputDir)
@@ -733,4 +773,19 @@ internal sealed class WorkshopDepotDownloader
     {
         return value > long.MaxValue ? long.MaxValue : (long)value;
     }
+}
+
+/// <summary>
+/// Summary of a batch workshop download run.
+/// </summary>
+internal sealed class BatchDownloadResult
+{
+    public BatchDownloadResult(int totalCount, List<ulong> failedIds)
+    {
+        TotalCount = totalCount;
+        FailedIds = failedIds;
+    }
+
+    public int TotalCount { get; }
+    public IReadOnlyList<ulong> FailedIds { get; }
 }

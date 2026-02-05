@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 
 /// <summary>
 /// Parses CLI arguments and environment variables into <see cref="Options"/>.
@@ -50,6 +51,11 @@ internal static class OptionsParser
                             options.Filters.Add(value);
                         }
                         break;
+                    case "--id-list":
+                    case "--ids":
+                    case "--batch":
+                        options.IdListPath = value;
+                        break;
                     case "--log":
                         options.LogPath = value;
                         break;
@@ -84,12 +90,27 @@ internal static class OptionsParser
                 options.PublishedFileId = id;
                 options.OutputDir = positional[1];
             }
-            else if (positional.Count >= 4 && ulong.TryParse(positional[3], NumberStyles.None, CultureInfo.InvariantCulture, out var altId))
+            else if (File.Exists(positional[0]))
             {
-                options.Username = positional[0];
-                options.Password = positional[1];
-                options.OutputDir = positional[2];
-                options.PublishedFileId = altId;
+                options.IdListPath = positional[0];
+                options.OutputDir = positional[1];
+            }
+            else if (positional.Count >= 4)
+            {
+                if (ulong.TryParse(positional[3], NumberStyles.None, CultureInfo.InvariantCulture, out var altId))
+                {
+                    options.Username = positional[0];
+                    options.Password = positional[1];
+                    options.OutputDir = positional[2];
+                    options.PublishedFileId = altId;
+                }
+                else if (File.Exists(positional[3]))
+                {
+                    options.Username = positional[0];
+                    options.Password = positional[1];
+                    options.OutputDir = positional[2];
+                    options.IdListPath = positional[3];
+                }
             }
         }
 
@@ -113,6 +134,10 @@ internal static class OptionsParser
         Console.WriteLine("Usage:");
         Console.WriteLine("  lurker <publishedFileId> <outputDir> [--appid <id>] [--anonymous] [--user <u>] [--pass <p>] [--guard <code>] [--email <code>]");
         Console.WriteLine("  lurker <user> <pass> <outputDir> <publishedFileId> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  lurker <idListFile.txt> <outputDir> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  lurker <user> <pass> <outputDir> <idListFile.txt> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine();
+        Console.WriteLine("Batch mode writes each workshop item into a subfolder named after its id under outputDir.");
         Console.WriteLine();
         Console.WriteLine("Environment variables:");
         Console.WriteLine("  STEAM_USER, STEAM_PASS, STEAM_GUARD, STEAM_EMAIL_GUARD");
