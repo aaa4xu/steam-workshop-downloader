@@ -40,7 +40,7 @@ steam-workshop-downloader <user> <pass> <outputDir> <publishedFileId or idListFi
 
 ### Output directory behavior
 
-`outputDir` is **always the parent directory**.  
+`outputDir` is always the parent directory.  
 Each workshop item is written into a subfolder named after its ID:
 
 ```
@@ -72,7 +72,7 @@ steam-workshop-downloader C:\mods\ids.txt C:\mods\xcom2 --user myuser --pass myp
 
 ## Filters
 
-Filters are **case-insensitive** and use `/` as a path separator internally.
+Filters are case-insensitive and use `/` as a path separator internally.
 
 Rules:
 - `*` matches within a single path segment.
@@ -85,13 +85,14 @@ Examples:
 - `config/*.ini` matches only `config/` top-level `.ini`.
 - `**/*.xcommod` matches anywhere.
 
-If at least one `--filter` is provided, **only matching files are kept**.
+If at least one `--filter` is provided, only matching files are kept.
 
 ## Batch pipeline details
 
-- Metadata is fetched via `GetPublishedFileDetails` at most **once per 2 seconds**.
+- Metadata is fetched via `GetPublishedFileDetails` at most once per 2 seconds.
+- Each request can include up to 100 workshop IDs.
 - IDs are enqueued as soon as metadata is available.
-- Downloads are **sequential**, but metadata lookup and download run concurrently.
+- Downloads are sequential, but metadata lookup and download run concurrently.
 
 ## Logging
 

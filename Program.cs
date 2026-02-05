@@ -86,27 +86,53 @@ internal static class Program
         var downloadTask = downloader.DownloadQueuedAsync(channel.Reader, parentDir);
 
         var lastRequestAt = DateTimeOffset.MinValue;
-        foreach (var id in ids)
+        for (var offset = 0; offset < ids.Count; offset += SteamWebApi.MaxPublishedFileDetailsBatchSize)
         {
+            var count = Math.Min(SteamWebApi.MaxPublishedFileDetailsBatchSize, ids.Count - offset);
+            var batchIds = new List<ulong>(count);
+            for (var i = 0; i < count; i++)
+            {
+                batchIds.Add(ids[offset + i]);
+            }
+
             lastRequestAt = await ThrottlePublishedFileDetailsAsync(lastRequestAt, TimeSpan.FromSeconds(2));
 
-            Console.WriteLine($"Workshop item: {id}");
-            var details = await SteamWebApi.FetchPublishedFileDetailsAsync(id, CancellationToken.None);
-            if (details.Result != 1)
+            var batchDetails = await SteamWebApi.FetchPublishedFileDetailsBatchAsync(batchIds, CancellationToken.None);
+            var detailsMap = new Dictionary<ulong, PublishedFileDetails>();
+            foreach (var details in batchDetails)
             {
-                Console.Error.WriteLine($"Failed to resolve workshop details for {id}. Result={details.Result}");
-                invalidIds.Add(id);
-                continue;
+                if (details.PublishedFileId != 0 && !detailsMap.ContainsKey(details.PublishedFileId))
+                {
+                    detailsMap.Add(details.PublishedFileId, details);
+                }
             }
 
-            Console.WriteLine($"Title: {details.Title}");
-            if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
+            foreach (var id in batchIds)
             {
-                Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
-            }
-            Console.WriteLine($"UGC handle: {details.HContentFile}");
+                Console.WriteLine($"Workshop item: {id}");
+                if (!detailsMap.TryGetValue(id, out var details))
+                {
+                    Console.Error.WriteLine($"Failed to resolve workshop details for {id}. Result=missing");
+                    invalidIds.Add(id);
+                    continue;
+                }
 
-            await channel.Writer.WriteAsync(id);
+                if (details.Result != 1)
+                {
+                    Console.Error.WriteLine($"Failed to resolve workshop details for {id}. Result={details.Result}");
+                    invalidIds.Add(id);
+                    continue;
+                }
+
+                Console.WriteLine($"Title: {details.Title}");
+                if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
+                {
+                    Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
+                }
+                Console.WriteLine($"UGC handle: {details.HContentFile}");
+
+                await channel.Writer.WriteAsync(id);
+            }
         }
 
         channel.Writer.Complete();
