@@ -43,6 +43,11 @@ internal static class Program
 
     private static async Task<int> RunBatchAsync(Options options, string parentDir)
     {
+        if (options.SyncAppId != 0)
+        {
+            return await RunSyncAsync(options, parentDir);
+        }
+
         List<ulong> ids;
         if (!string.IsNullOrWhiteSpace(options.IdListPath))
         {
@@ -148,6 +153,75 @@ internal static class Program
         }
 
         Console.WriteLine("Batch done.");
+        return 0;
+    }
+
+    private static async Task<int> RunSyncAsync(Options options, string parentDir)
+    {
+        if (string.IsNullOrWhiteSpace(options.WebApiKey))
+        {
+            Console.Error.WriteLine("Sync mode requires a Steam Web API key (--webapi-key or STEAM_WEBAPI_KEY).");
+            return 2;
+        }
+
+        Console.WriteLine($"Sync appid: {options.SyncAppId}");
+        Console.WriteLine($"Output parent: {parentDir}");
+
+        var invalidIds = new List<ulong>();
+        var seen = new HashSet<ulong>();
+        var channel = Channel.CreateUnbounded<ulong>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true
+        });
+
+        Console.WriteLine("Using workshop depot download (sync).");
+        var downloader = new WorkshopDepotDownloader(options);
+        var downloadTask = downloader.DownloadQueuedAsync(channel.Reader, parentDir);
+
+        await foreach (var details in SteamWebApi.QueryFilesAsync(options.WebApiKey, options.SyncAppId, SteamWebApi.MaxPublishedFileDetailsBatchSize, CancellationToken.None))
+        {
+            if (details.PublishedFileId == 0)
+            {
+                continue;
+            }
+
+            if (!seen.Add(details.PublishedFileId))
+            {
+                continue;
+            }
+
+            Console.WriteLine($"Workshop item: {details.PublishedFileId}");
+            if (details.Result != 1)
+            {
+                Console.Error.WriteLine($"Failed to resolve workshop details for {details.PublishedFileId}. Result={details.Result}");
+                invalidIds.Add(details.PublishedFileId);
+                continue;
+            }
+
+            Console.WriteLine($"Title: {details.Title}");
+            if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
+            {
+                Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
+            }
+            Console.WriteLine($"UGC handle: {details.HContentFile}");
+
+            await channel.Writer.WriteAsync(details.PublishedFileId);
+        }
+
+        channel.Writer.Complete();
+        var result = await downloadTask;
+
+        var failed = new List<ulong>(invalidIds);
+        failed.AddRange(result.FailedIds);
+
+        if (failed.Count > 0)
+        {
+            Console.Error.WriteLine($"Sync completed with failures: {string.Join(", ", failed)}");
+            return 5;
+        }
+
+        Console.WriteLine("Sync done.");
         return 0;
     }
 

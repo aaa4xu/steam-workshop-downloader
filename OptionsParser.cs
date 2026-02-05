@@ -51,6 +51,22 @@ internal static class OptionsParser
                             options.Filters.Add(value);
                         }
                         break;
+                    case "--sync":
+                        var syncId = ParseUInt(value, options.AppId);
+                        options.SyncAppId = syncId;
+                        if (syncId != 0)
+                        {
+                            options.AppId = syncId;
+                        }
+                        break;
+                    case "--webapi-key":
+                    case "--api-key":
+                        options.WebApiKey = value;
+                        break;
+                    case "--output":
+                    case "--out":
+                        options.OutputOverride = value;
+                        break;
                     case "--id-list":
                     case "--ids":
                     case "--batch":
@@ -114,10 +130,21 @@ internal static class OptionsParser
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(options.OutputOverride))
+        {
+            options.OutputDir = options.OutputOverride;
+        }
+
+        if (string.IsNullOrWhiteSpace(options.OutputDir) && options.SyncAppId != 0 && positional.Count >= 1)
+        {
+            options.OutputDir = positional[0];
+        }
+
         options.Username ??= Environment.GetEnvironmentVariable("STEAM_USER");
         options.Password ??= Environment.GetEnvironmentVariable("STEAM_PASS");
         options.GuardCode ??= Environment.GetEnvironmentVariable("STEAM_GUARD");
         options.EmailCode ??= Environment.GetEnvironmentVariable("STEAM_EMAIL_GUARD");
+        options.WebApiKey ??= Environment.GetEnvironmentVariable("STEAM_WEBAPI_KEY");
         options.AuthCachePath ??= Environment.GetEnvironmentVariable("STEAM_AUTH_CACHE");
         options.LogPath ??= Environment.GetEnvironmentVariable("STEAM_LOG") ?? Environment.GetEnvironmentVariable("STEAM_WORKSHOP_DOWNLOADER_LOG");
 
@@ -136,12 +163,14 @@ internal static class OptionsParser
         Console.WriteLine("  steam-workshop-downloader <user> <pass> <outputDir> <publishedFileId> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
         Console.WriteLine("  steam-workshop-downloader <idListFile.txt> <outputDir> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
         Console.WriteLine("  steam-workshop-downloader <user> <pass> <outputDir> <idListFile.txt> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  steam-workshop-downloader --sync <appid> <outputDir> [--webapi-key <key>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
+        Console.WriteLine("  steam-workshop-downloader --sync <appid> --output <dir> [--webapi-key <key>] [--filter <glob>] [--log <path>] [--auth-cache <path>]");
         Console.WriteLine();
         Console.WriteLine("Batch mode writes each workshop item into a subfolder named after its id under outputDir.");
         Console.WriteLine();
         Console.WriteLine("Environment variables:");
         Console.WriteLine("  STEAM_USER, STEAM_PASS, STEAM_GUARD, STEAM_EMAIL_GUARD");
-        Console.WriteLine("  STEAM_AUTH_CACHE, STEAM_LOG, STEAM_WORKSHOP_DOWNLOADER_LOG");
+        Console.WriteLine("  STEAM_AUTH_CACHE, STEAM_LOG, STEAM_WORKSHOP_DOWNLOADER_LOG, STEAM_WEBAPI_KEY");
     }
 
     private static uint ParseUInt(string? value, uint fallback)

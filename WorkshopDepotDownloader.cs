@@ -18,6 +18,7 @@ using SteamKit2.Internal;
 internal sealed class WorkshopDepotDownloader
 {
     private readonly Options _options;
+    private const int MaxDownloadAttempts = 3;
 
     public WorkshopDepotDownloader(Options options)
     {
@@ -64,7 +65,36 @@ internal sealed class WorkshopDepotDownloader
                 {
                     processed++;
                     var itemDir = Path.Combine(parentDir, id.ToString(CultureInfo.InvariantCulture));
-                    var ok = await DownloadWithSessionAsync(session, id, itemDir);
+                    var ok = false;
+                    for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
+                    {
+                        if (attempt > 1)
+                        {
+                            Console.WriteLine($"Retry {attempt}/{MaxDownloadAttempts} for {id}...");
+                        }
+
+                        try
+                        {
+                            ok = await DownloadWithSessionAsync(session, id, itemDir);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"Download failed for {id} on attempt {attempt}: {ex.Message}");
+                            ok = false;
+                        }
+
+                        if (ok)
+                        {
+                            break;
+                        }
+
+                        if (attempt < MaxDownloadAttempts)
+                        {
+                            var delay = TimeSpan.FromSeconds(Math.Min(10, attempt * 2));
+                            Console.WriteLine($"Retrying in {delay.TotalSeconds:0} sec...");
+                            await Task.Delay(delay);
+                        }
+                    }
                     if (!ok)
                     {
                         failed.Add(id);

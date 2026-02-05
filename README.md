@@ -32,6 +32,18 @@ Batch from file:
 steam-workshop-downloader <idListFile.txt> <outputDir> [--appid <id>] [--user <u>] [--pass <p>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
 ```
 
+Sync from Steam Web API (all mods for an appid):
+
+```bash
+steam-workshop-downloader --sync <appid> <outputDir> --webapi-key <key> [--filter <glob>] [--log <path>] [--auth-cache <path>]
+```
+
+Sync with explicit output flag:
+
+```bash
+steam-workshop-downloader --sync <appid> --output <dir> --webapi-key <key> [--filter <glob>] [--log <path>] [--auth-cache <path>]
+```
+
 Alternative positional form:
 
 ```bash
@@ -94,6 +106,9 @@ If at least one `--filter` is provided, only matching files are kept.
 - IDs are enqueued as soon as metadata is available.
 - Downloads are sequential, but metadata lookup and download run concurrently.
 
+Sync mode uses `IPublishedFileService/QueryFiles` to page through all mods for the appid
+and enqueues them as soon as each page returns.
+
 ## Logging
 
 - Default: stdout/stderr only.
@@ -116,6 +131,7 @@ Override with:
 - `STEAM_GUARD`, `STEAM_EMAIL_GUARD`
 - `STEAM_AUTH_CACHE`
 - `STEAM_LOG` / `STEAM_WORKSHOP_DOWNLOADER_LOG`
+- `STEAM_WEBAPI_KEY` (required for `--sync`)
 
 ## Build
 
