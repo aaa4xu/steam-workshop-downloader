@@ -49,21 +49,22 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $archive = "steam-workshop-downloader-${{ matrix.rid }}.zip"
-          if (Test-Path $archive) { Remove-Item $archive }
-          Compress-Archive -Path artifacts/${{ matrix.rid }}/* -DestinationPath $archive
+          $dest = "artifacts/$archive"
+          if (Test-Path $dest) { Remove-Item $dest }
+          Compress-Archive -Path artifacts/${{ matrix.rid }}/* -DestinationPath $dest
 
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
           archive="steam-workshop-downloader-${{ matrix.rid }}.zip"
-          rm -f "$archive"
+          rm -f "artifacts/$archive"
           (cd artifacts/${{ matrix.rid }} && zip -r "../$archive" .)
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: steam-workshop-downloader-${{ matrix.rid }}
-          path: steam-workshop-downloader-${{ matrix.rid }}.zip
+          path: artifacts/steam-workshop-downloader-${{ matrix.rid }}.zip
 
   release:
     runs-on: ubuntu-latest
