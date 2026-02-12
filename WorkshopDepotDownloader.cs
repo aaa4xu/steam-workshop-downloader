@@ -6,6 +6,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using SteamKit2;
@@ -20,6 +22,9 @@ internal sealed class WorkshopDepotDownloader
 {
     private readonly Options _options;
     private const int MaxDownloadAttempts = 3;
+    private static readonly TimeSpan ManifestDownloadTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ManifestTimeoutCooldownBase = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan ManifestTimeoutCooldownMax = TimeSpan.FromSeconds(120);
 
     public WorkshopDepotDownloader(Options options)
     {
@@ -34,7 +39,20 @@ internal sealed class WorkshopDepotDownloader
 
         try
         {
-            return await DownloadWithSessionAsync(session, publishedFileId, outputDir);
+            var details = await SteamWebApi.FetchPublishedFileDetailsAsync(publishedFileId, default);
+            if (details.Result != 1)
+            {
+                Console.Error.WriteLine($"Failed to resolve workshop details for {publishedFileId}. Result={details.Result}");
+                return false;
+            }
+
+            if (details.HContentFile == 0)
+            {
+                Console.Error.WriteLine($"Workshop item {publishedFileId} has no hcontent_file (not SteamPipe workshop depot content?).");
+                return false;
+            }
+
+            return await DownloadWithSessionAsync(session, publishedFileId, details.HContentFile, outputDir);
         }
         catch (Exception ex)
         {
@@ -50,7 +68,7 @@ internal sealed class WorkshopDepotDownloader
     /// <summary>
     /// Consumes a queue of workshop IDs and downloads them sequentially using one Steam session.
     /// </summary>
-    public async Task<BatchDownloadResult> DownloadQueuedAsync(ChannelReader<ulong> reader, string parentDir)
+    public async Task<BatchDownloadResult> DownloadQueuedAsync(ChannelReader<WorkshopItemRequest> reader, string parentDir)
     {
         var session = new SteamSession(_options);
         await session.ConnectAsync();
@@ -86,9 +104,9 @@ internal sealed class WorkshopDepotDownloader
         return new BatchDownloadResult(0, new List<ulong>());
     }
 
-    private async Task<bool> DownloadWithSessionAsync(SteamSession session, ulong publishedFileId, string outputDir)
+    private async Task<bool> DownloadWithSessionAsync(SteamSession session, ulong publishedFileId, ulong manifestId, string outputDir)
     {
-        var manifest = await FetchManifestAsync(session, publishedFileId, outputDir);
+        var manifest = await FetchManifestAsync(session, publishedFileId, outputDir, manifestId);
         if (manifest == null)
         {
             return false;
@@ -98,22 +116,45 @@ internal sealed class WorkshopDepotDownloader
     }
 
     private async Task<ManifestStageResult> EnqueueManifestsAsync(
-        ChannelReader<ulong> reader,
+        ChannelReader<WorkshopItemRequest> reader,
         ChannelWriter<ManifestDownloadResult> writer,
         SteamSession session,
         string parentDir)
     {
         var failed = new List<ulong>();
         var processed = 0;
+        var cooldownState = new ManifestCooldownState();
 
         try
         {
             while (await reader.WaitToReadAsync())
             {
-                while (reader.TryRead(out var id))
+                while (reader.TryRead(out var item))
                 {
                     processed++;
+                    var id = item.PublishedFileId;
+                    var manifestId = item.ManifestId;
                     var itemDir = Path.Combine(parentDir, id.ToString(CultureInfo.InvariantCulture));
+
+                    if (manifestId == 0)
+                    {
+                        Console.Error.WriteLine($"Workshop item {id} missing manifest id.");
+                        failed.Add(id);
+                        continue;
+                    }
+
+                    var state = TryLoadState(itemDir);
+                    if (state != null && state.ManifestId == manifestId)
+                    {
+                        if (IsStateUpToDate(state, itemDir, _options.Filters))
+                        {
+                            Console.WriteLine($"State up-to-date for {id}, skipping download.");
+                            continue;
+                        }
+
+                        Console.WriteLine($"State exists for {id}, but local files differ. Re-downloading.");
+                    }
+
                     var ok = false;
                     for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
                     {
@@ -124,34 +165,42 @@ internal sealed class WorkshopDepotDownloader
 
                         try
                         {
-                            var manifestId = await GetWorkshopManifestIdAsync(session, id);
-                            if (manifestId == 0)
-                            {
-                                Console.WriteLine("Workshop manifest id not found.");
-                            }
-                            else
-                            {
-                                var state = TryLoadState(itemDir);
-                                if (state != null && state.ManifestId == manifestId)
-                                {
-                                    if (IsStateUpToDate(state, itemDir, _options.Filters))
-                                    {
-                                        Console.WriteLine($"State up-to-date for {id}, skipping download.");
-                                        ok = true;
-                                        break;
-                                    }
+                            await WaitForCooldownAsync(cooldownState.CooldownUntil);
 
-                                    Console.WriteLine($"State exists for {id}, but local files differ. Re-downloading.");
-                                }
-
-                                var manifest = await FetchManifestAsync(session, id, itemDir, manifestId);
-                                if (manifest != null)
-                                {
-                                    await writer.WriteAsync(manifest);
-                                    ok = true;
-                                    break;
-                                }
+                            var manifest = await FetchManifestAsync(session, id, itemDir, manifestId);
+                            if (manifest != null)
+                            {
+                                await writer.WriteAsync(manifest);
+                                cooldownState.ConsecutiveTimeouts = 0;
+                                ok = true;
+                                break;
                             }
+                        }
+                        catch (SteamKitWebRequestException ex)
+                        {
+                            LogWebRequestException(ex, $"Manifest download failed for {id}");
+                            var delay = TryGetRateLimitDelay(ex);
+                            if (delay.HasValue)
+                            {
+                                cooldownState.CooldownUntil = DateTimeOffset.UtcNow + delay.Value;
+                                Console.WriteLine($"Rate limit detected. Cooling down for {delay.Value.TotalSeconds:0} sec...");
+                            }
+                        }
+                        catch (TimeoutException ex)
+                        {
+                            cooldownState.ConsecutiveTimeouts++;
+                            Console.WriteLine($"Manifest download timed out for {id}: {ex.Message}");
+                            var delay = GetTimeoutCooldown(cooldownState.ConsecutiveTimeouts);
+                            if (delay.HasValue)
+                            {
+                                cooldownState.CooldownUntil = DateTimeOffset.UtcNow + delay.Value;
+                                Console.WriteLine($"Cooling down for {delay.Value.TotalSeconds:0} sec after {cooldownState.ConsecutiveTimeouts} timeouts...");
+                            }
+                        }
+                        catch (AsyncJobFailedException ex)
+                        {
+                            Console.WriteLine($"Manifest request failed for {id}: {DescribeAsyncJobFailure(ex)}");
+                            cooldownState.CooldownUntil = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
                         }
                         catch (Exception ex)
                         {
@@ -160,7 +209,7 @@ internal sealed class WorkshopDepotDownloader
 
                         if (attempt < MaxDownloadAttempts)
                         {
-                            var delay = TimeSpan.FromSeconds(Math.Min(10, attempt * 2));
+                            var delay = TimeSpan.FromSeconds(Math.Min(30, attempt * 10));
                             Console.WriteLine($"Retrying manifest in {delay.TotalSeconds:0} sec...");
                             await Task.Delay(delay);
                         }
@@ -207,6 +256,11 @@ internal sealed class WorkshopDepotDownloader
                         {
                             ok = await DownloadFromManifestAsync(session, manifest);
                         }
+                        catch (AsyncJobFailedException ex)
+                        {
+                            Console.Error.WriteLine($"Download failed for {manifest.PublishedFileId} on attempt {attempt}: {DescribeAsyncJobFailure(ex)}");
+                            ok = false;
+                        }
                         catch (Exception ex)
                         {
                             Console.Error.WriteLine($"Download failed for {manifest.PublishedFileId} on attempt {attempt}: {ex.Message}");
@@ -239,18 +293,6 @@ internal sealed class WorkshopDepotDownloader
         }
 
         return new DownloadStageResult(failed);
-    }
-
-    private async Task<ManifestDownloadResult?> FetchManifestAsync(SteamSession session, ulong publishedFileId, string outputDir)
-    {
-        var manifestId = await GetWorkshopManifestIdAsync(session, publishedFileId);
-        if (manifestId == 0)
-        {
-            Console.WriteLine("Workshop manifest id not found.");
-            return null;
-        }
-
-        return await FetchManifestAsync(session, publishedFileId, outputDir, manifestId);
     }
 
     private async Task<ManifestDownloadResult?> FetchManifestAsync(SteamSession session, ulong publishedFileId, string outputDir, ulong manifestId)
@@ -302,7 +344,8 @@ internal sealed class WorkshopDepotDownloader
         }
 
         using var cdn = new Client(session.Client);
-        var manifest = await cdn.DownloadManifestAsync(depotId, manifestId, manifestRequestCode, server, depotKey, null, cdnAuthToken);
+        var manifestTask = cdn.DownloadManifestAsync(depotId, manifestId, manifestRequestCode, server, depotKey, null, cdnAuthToken);
+        var manifest = await manifestTask.WaitAsync(ManifestDownloadTimeout);
 
         if (manifest.FilenamesEncrypted)
         {
@@ -339,44 +382,6 @@ internal sealed class WorkshopDepotDownloader
 
         SwapDirectories(manifestResult.OutputDir, tempDir);
         return true;
-    }
-
-    private async Task<ulong> GetWorkshopManifestIdAsync(SteamSession session, ulong publishedFileId)
-    {
-        var unifiedMessages = session.Client.GetHandler<SteamUnifiedMessages>()
-            ?? throw new InvalidOperationException("SteamUnifiedMessages handler not available.");
-        var publishedService = unifiedMessages.CreateService<PublishedFile>();
-
-        var request = new CPublishedFile_GetItemInfo_Request
-        {
-            appid = _options.AppId,
-        };
-        request.workshop_items.Add(new CPublishedFile_GetItemInfo_Request.WorkshopItem
-        {
-            published_file_id = publishedFileId
-        });
-
-        var job = publishedService.GetItemInfo(request);
-        job.Timeout = TimeSpan.FromSeconds(60);
-        try
-        {
-            var response = await job.ToTask().WaitAsync(TimeSpan.FromSeconds(65));
-            var itemCount = response.Body?.workshop_items?.Count ?? 0;
-            Console.WriteLine($"PublishedFile.GetItemInfo result: {response.Result}, items: {itemCount}");
-            if (response.Result != EResult.OK || response.Body == null || response.Body.workshop_items.Count == 0)
-            {
-                return 0;
-            }
-
-            var item = response.Body.workshop_items[0];
-            Console.WriteLine($"Workshop manifest id: {item.manifest_id}");
-            return item.manifest_id;
-        }
-        catch (TaskCanceledException ex)
-        {
-            Console.WriteLine($"GetItemInfo timed out: {ex.Message}");
-            return 0;
-        }
     }
 
     private async Task<uint> GetWorkshopDepotIdAsync(SteamSession session)
@@ -1130,6 +1135,165 @@ internal sealed class WorkshopDepotDownloader
     {
         return value > long.MaxValue ? long.MaxValue : (long)value;
     }
+
+    private static async Task WaitForCooldownAsync(DateTimeOffset cooldownUntil)
+    {
+        if (cooldownUntil == DateTimeOffset.MinValue)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (cooldownUntil <= now)
+        {
+            return;
+        }
+
+        var delay = cooldownUntil - now;
+        Console.WriteLine($"Cooling down for {delay.TotalSeconds:0} sec...");
+        await Task.Delay(delay);
+    }
+
+    private static TimeSpan? GetTimeoutCooldown(int consecutiveTimeouts)
+    {
+        if (consecutiveTimeouts < 3)
+        {
+            return null;
+        }
+
+        var seconds = ManifestTimeoutCooldownBase.TotalSeconds * (consecutiveTimeouts - 2);
+        var delay = TimeSpan.FromSeconds(Math.Min(seconds, ManifestTimeoutCooldownMax.TotalSeconds));
+        return delay;
+    }
+
+    private static void LogWebRequestException(SteamKitWebRequestException ex, string context)
+    {
+        var status = ex.StatusCode;
+        var statusText = (int)status == 0 ? "unknown" : $"{(int)status} {status}";
+        var retryAfter = TryGetRetryAfter(ex);
+        if (retryAfter.HasValue)
+        {
+            Console.WriteLine($"{context}: HTTP {statusText}. Retry-After: {retryAfter.Value.TotalSeconds:0} sec.");
+        }
+        else
+        {
+            Console.WriteLine($"{context}: HTTP {statusText}.");
+        }
+    }
+
+    private static TimeSpan? TryGetRateLimitDelay(SteamKitWebRequestException ex)
+    {
+        var retryAfter = TryGetRetryAfter(ex);
+        if (retryAfter.HasValue)
+        {
+            return retryAfter;
+        }
+
+        var status = ex.StatusCode;
+        if (IsRateLimitStatus(status))
+        {
+            return TimeSpan.FromSeconds(60);
+        }
+
+        return null;
+    }
+
+    private static bool IsRateLimitStatus(HttpStatusCode status)
+    {
+        return status == (HttpStatusCode)429
+            || status == HttpStatusCode.ServiceUnavailable
+            || status == HttpStatusCode.BadGateway
+            || status == HttpStatusCode.GatewayTimeout;
+    }
+
+    private static TimeSpan? TryGetRetryAfter(SteamKitWebRequestException ex)
+    {
+        object? headers = ex.Headers;
+        if (headers == null)
+        {
+            return null;
+        }
+
+        if (headers is HttpResponseHeaders httpHeaders)
+        {
+            if (httpHeaders.TryGetValues("Retry-After", out var values))
+            {
+                foreach (var value in values)
+                {
+                    if (TryParseRetryAfterValue(value, out var delay))
+                    {
+                        return delay;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        if (headers is IEnumerable<KeyValuePair<string, IEnumerable<string>>> pairs)
+        {
+            foreach (var pair in pairs)
+            {
+                if (!string.Equals(pair.Key, "Retry-After", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                foreach (var value in pair.Value)
+                {
+                    if (TryParseRetryAfterValue(value, out var delay))
+                    {
+                        return delay;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryParseRetryAfterValue(string value, out TimeSpan delay)
+    {
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
+        {
+            delay = TimeSpan.FromSeconds(seconds);
+            return delay > TimeSpan.Zero;
+        }
+
+        if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var date))
+        {
+            var diff = date - DateTimeOffset.UtcNow;
+            if (diff > TimeSpan.Zero)
+            {
+                delay = diff;
+                return true;
+            }
+        }
+
+        delay = TimeSpan.Zero;
+        return false;
+    }
+
+    private static string DescribeAsyncJobFailure(AsyncJobFailedException ex)
+    {
+        // SteamKit2 throws this when a job callback returns EResult != OK.
+        // Some versions expose `Result` property; use reflection to keep compatibility.
+        try
+        {
+            var prop = ex.GetType().GetProperty("Result");
+            var value = prop?.GetValue(ex);
+            if (value != null)
+            {
+                return $"Result={value}";
+            }
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return ex.Message;
+    }
 }
 
 /// <summary>
@@ -1221,4 +1385,10 @@ internal sealed class WorkshopStateFile
     public string Path { get; set; } = string.Empty;
     public ulong Size { get; set; }
     public string? Sha1 { get; set; }
+}
+
+internal sealed class ManifestCooldownState
+{
+    public int ConsecutiveTimeouts { get; set; }
+    public DateTimeOffset CooldownUntil { get; set; } = DateTimeOffset.MinValue;
 }

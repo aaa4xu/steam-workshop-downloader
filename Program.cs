@@ -80,7 +80,7 @@ internal static class Program
         Console.WriteLine($"AppID: {options.AppId}");
 
         var invalidIds = new List<ulong>();
-        var channel = Channel.CreateUnbounded<ulong>(new UnboundedChannelOptions
+        var channel = Channel.CreateUnbounded<WorkshopItemRequest>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = true
@@ -127,12 +127,19 @@ internal static class Program
                     invalidIds.Add(id);
                     continue;
                 }
+                if (details.HContentFile == 0)
+                {
+                    Console.Error.WriteLine($"Workshop item {id} has no hcontent_file (not SteamPipe workshop depot content?).");
+                    invalidIds.Add(id);
+                    continue;
+                }
+
                 if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
                 {
                     Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
                 }
 
-                await channel.Writer.WriteAsync(id);
+                await channel.Writer.WriteAsync(new WorkshopItemRequest(id, details.HContentFile));
             }
         }
 
@@ -165,7 +172,7 @@ internal static class Program
 
         var invalidIds = new List<ulong>();
         var seen = new HashSet<ulong>();
-        var channel = Channel.CreateUnbounded<ulong>(new UnboundedChannelOptions
+        var channel = Channel.CreateUnbounded<WorkshopItemRequest>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = true
@@ -194,12 +201,19 @@ internal static class Program
                 continue;
             }
 
+            if (details.HContentFile == 0)
+            {
+                Console.Error.WriteLine($"Workshop item {details.PublishedFileId} has no hcontent_file (not SteamPipe workshop depot content?).");
+                invalidIds.Add(details.PublishedFileId);
+                continue;
+            }
+
             if (details.ConsumerAppId != 0 && details.ConsumerAppId != options.AppId)
             {
                 Console.WriteLine($"Warning: workshop item appid {details.ConsumerAppId} differs from requested {options.AppId}.");
             }
 
-            await channel.Writer.WriteAsync(details.PublishedFileId);
+            await channel.Writer.WriteAsync(new WorkshopItemRequest(details.PublishedFileId, details.HContentFile));
         }
 
         channel.Writer.Complete();
