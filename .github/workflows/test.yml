@@ -17,7 +17,10 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Restore
-        run: dotnet restore ./steam-workshop-downloader.csproj
+        run: dotnet restore ./steam-workshop-downloader.Tests/steam-workshop-downloader.Tests.csproj
 
       - name: Build
-        run: dotnet build ./steam-workshop-downloader.csproj -c Release --no-restore
+        run: dotnet build ./steam-workshop-downloader.Tests/steam-workshop-downloader.Tests.csproj -c Release --no-restore
+
+      - name: Test
+        run: dotnet test ./steam-workshop-downloader.Tests/steam-workshop-downloader.Tests.csproj -c Release --no-build --no-restore
