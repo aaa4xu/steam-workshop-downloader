@@ -13,4 +13,10 @@
     <PackageReference Include="SteamKit2" Version="3.4.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Keep test projects in-repo without accidentally compiling their sources into the main app. -->
+    <Compile Remove="steam-workshop-downloader.Tests\\**\\*.cs" />
+    <None Remove="steam-workshop-downloader.Tests\\**\\*" />
+  </ItemGroup>
+
 </Project>

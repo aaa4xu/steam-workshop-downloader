@@ -5,6 +5,8 @@ using System.Collections.Generic;
 /// </summary>
 internal sealed class Options
 {
+    public bool ShowHelp { get; set; }
+    public CommandKind Command { get; set; } = CommandKind.None;
     public ulong PublishedFileId { get; set; }
     public string? IdListPath { get; set; }
     public uint SyncAppId { get; set; }
@@ -17,19 +19,16 @@ internal sealed class Options
     public string? WebApiKey { get; set; }
     public string? LogPath { get; set; }
     public string? AuthCachePath { get; set; }
-    public string? OutputOverride { get; set; }
     public List<string> Filters { get; set; } = new();
     public bool UseAnonymous { get; set; }
 
-    public bool IsValid => !string.IsNullOrWhiteSpace(OutputDir)
-        && (PublishedFileId != 0 || !string.IsNullOrWhiteSpace(IdListPath) || SyncAppId != 0);
-
-    public bool IsBatch => !string.IsNullOrWhiteSpace(IdListPath) || SyncAppId != 0;
-
-    public Options Clone()
+    public bool IsValid => Command switch
     {
-        var clone = (Options)MemberwiseClone();
-        clone.Filters = new List<string>(Filters);
-        return clone;
-    }
+        CommandKind.Mod => PublishedFileId != 0 && !string.IsNullOrWhiteSpace(OutputDir),
+        CommandKind.ModsFile => !string.IsNullOrWhiteSpace(IdListPath) && !string.IsNullOrWhiteSpace(OutputDir),
+        CommandKind.Sync => SyncAppId != 0 && !string.IsNullOrWhiteSpace(OutputDir),
+        _ => false
+    };
+
+    public bool IsBatch => Command is CommandKind.ModsFile or CommandKind.Sync;
 }

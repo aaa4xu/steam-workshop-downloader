@@ -20,34 +20,22 @@ It supports filtering, incremental updates (hash-based reuse), and batch process
 
 ## Usage
 
-Single ID (still uses batch pipeline internally):
+Single mod:
 
 ```bash
-steam-workshop-downloader <publishedFileId> <outputDir> [--appid <id>] [--user <u>] [--pass <p>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
+steam-workshop-downloader mod <publishedFileId> <outputDir> [--appid <id>] [--anonymous] [--user <u>] [--pass <p>] [--guard <code>] [--email <code>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
 ```
 
 Batch from file:
 
 ```bash
-steam-workshop-downloader <idListFile.txt> <outputDir> [--appid <id>] [--user <u>] [--pass <p>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
+steam-workshop-downloader mods-file <idListFile.txt> <outputDir> [--appid <id>] [--anonymous] [--user <u>] [--pass <p>] [--guard <code>] [--email <code>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
 ```
 
 Sync from Steam Web API (all mods for an appid):
 
 ```bash
-steam-workshop-downloader --sync <appid> <outputDir> --webapi-key <key> [--filter <glob>] [--log <path>] [--auth-cache <path>]
-```
-
-Sync with explicit output flag:
-
-```bash
-steam-workshop-downloader --sync <appid> --output <dir> --webapi-key <key> [--filter <glob>] [--log <path>] [--auth-cache <path>]
-```
-
-Alternative positional form:
-
-```bash
-steam-workshop-downloader <user> <pass> <outputDir> <publishedFileId or idListFile.txt> [--appid <id>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
+steam-workshop-downloader sync <appid> <outputDir> --webapi-key <key> [--anonymous] [--user <u>] [--pass <p>] [--guard <code>] [--email <code>] [--filter <glob>] [--log <path>] [--auth-cache <path>]
 ```
 
 ### Output directory behavior
@@ -64,15 +52,23 @@ Each workshop item is written into a subfolder named after its ID:
 Single mod with filters:
 
 ```bash
-steam-workshop-downloader 2664422411 C:\mods\xcom2 --user myuser --pass mypass ^
+steam-workshop-downloader mod 2664422411 C:\mods\xcom2 --user myuser --pass mypass ^
   --filter src/**.uc --filter src/**.uci --filter config/**.ini --filter localization/**.int
 ```
 
 Batch file:
 
 ```bash
-steam-workshop-downloader C:\mods\ids.txt C:\mods\xcom2 --user myuser --pass mypass --filter src/**.uc
+steam-workshop-downloader mods-file C:\mods\ids.txt C:\mods\xcom2 --user myuser --pass mypass --filter src/**.uc
 ```
+
+Sync all mods for an appid (requires Steam Web API key):
+
+```bash
+steam-workshop-downloader sync 268500 C:\mods\xcom2 --webapi-key <key> --filter config/**.ini
+```
+
+Note: `--anonymous` only affects Steam login; it does not replace `--webapi-key`.
 
 `ids.txt` example:
 
@@ -131,7 +127,7 @@ Override with:
 - `STEAM_GUARD`, `STEAM_EMAIL_GUARD`
 - `STEAM_AUTH_CACHE`
 - `STEAM_LOG` / `STEAM_WORKSHOP_DOWNLOADER_LOG`
-- `STEAM_WEBAPI_KEY` (required for `--sync`)
+- `STEAM_WEBAPI_KEY` (required for `sync`)
 
 ## Build
 

@@ -13,10 +13,34 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        var options = OptionsParser.Parse(args);
+        var parsed = OptionsParser.Parse(args);
+        var options = parsed.Options;
+
+        if (options.ShowHelp)
+        {
+            OptionsParser.PrintUsage(Console.Out);
+            return 0;
+        }
+
+        if (parsed.HasErrors)
+        {
+            foreach (var error in parsed.Errors)
+            {
+                Console.Error.WriteLine(error);
+            }
+            OptionsParser.PrintUsage(Console.Error);
+            return 2;
+        }
+
+        foreach (var warning in parsed.Warnings)
+        {
+            Console.Error.WriteLine(warning);
+        }
+
         if (!options.IsValid)
         {
-            OptionsParser.PrintUsage();
+            Console.Error.WriteLine("Invalid arguments.");
+            OptionsParser.PrintUsage(Console.Error);
             return 2;
         }
 
@@ -43,13 +67,13 @@ internal static class Program
 
     private static async Task<int> RunBatchAsync(Options options, string parentDir)
     {
-        if (options.SyncAppId != 0)
+        if (options.Command == CommandKind.Sync)
         {
             return await RunSyncAsync(options, parentDir);
         }
 
         List<ulong> ids;
-        if (!string.IsNullOrWhiteSpace(options.IdListPath))
+        if (options.Command == CommandKind.ModsFile)
         {
             if (!File.Exists(options.IdListPath))
             {
@@ -59,7 +83,7 @@ internal static class Program
 
             ids = WorkshopIdListReader.ReadIds(options.IdListPath);
         }
-        else if (options.PublishedFileId != 0)
+        else if (options.Command == CommandKind.Mod)
         {
             ids = new List<ulong> { options.PublishedFileId };
         }
